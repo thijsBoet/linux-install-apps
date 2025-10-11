@@ -79,7 +79,7 @@ apt -y install google-chrome-stable || {
 #############################################
 echo "=== Installing Spotify ==="
 if [ ! -f /etc/apt/sources.list.d/spotify.list ]; then
-    curl -sS https://download.spotify.com/debian/pubkey_6224F9941A8AA6D1.gpg | gpg --dearmor -o /usr/share/keyrings/spotify-keyring.gpg
+    curl -sS https://download.spotify.com/debian/pubkey_C85668DF69375001.gpg | gpg --dearmor -o /usr/share/keyrings/spotify-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/spotify-keyring.gpg] http://repository.spotify.com stable non-free" > /etc/apt/sources.list.d/spotify.list
     apt update
 fi
