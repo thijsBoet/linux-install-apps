@@ -60,19 +60,21 @@ if ! flatpak remote-list | grep -q flathub; then
 fi
 
 #############################################
-# Google Chrome (from APT if possible, otherwise Flatpak)
+# Brave Browser (from APT if possible, otherwise Flatpak)
 #############################################
-echo "=== Installing Google Chrome ==="
-# Check if Chrome repo is already configured
-if [ ! -f /etc/apt/sources.list.d/google-chrome.list ]; then
-    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+echo "=== Installing Brave Browser ==="
+
+# Check if Brave repo is already configured
+if [ ! -f /etc/apt/sources.list.d/brave-browser-release.list ]; then
+    wget -q -O /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] \
+https://brave-browser-apt-release.s3.brave.com/ stable main" \
+        > /etc/apt/sources.list.d/brave-browser-release.list
+
     apt update
 fi
-apt -y install google-chrome-stable || {
-    echo "APT install failed, falling back to Flatpak..."
-    flatpak install -y flathub com.google.Chrome
-}
 
 #############################################
 # Spotify (from APT if possible, otherwise Flatpak)
