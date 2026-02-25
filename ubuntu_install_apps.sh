@@ -62,19 +62,24 @@ fi
 #############################################
 # Brave Browser (from APT if possible, otherwise Flatpak)
 #############################################
-echo "=== Installing Brave Browser ==="
+echo "=== Installing Google Chrome (Stable) ==="
 
-# Check if Brave repo is already configured
-if [ ! -f /etc/apt/sources.list.d/brave-browser-release.list ]; then
-    wget -q -O /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+# Check if Google Chrome repo is already configured
+if [ ! -f /etc/apt/sources.list.d/google-chrome.list ]; then
+    # Download and install Google's signing key
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
 
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] \
-https://brave-browser-apt-release.s3.brave.com/ stable main" \
-        > /etc/apt/sources.list.d/brave-browser-release.list
+    # Add the Google Chrome repository
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
+http://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list
 
     apt update
 fi
+
+# Install Google Chrome Stable
+apt install -y google-chrome-stable
 
 #############################################
 # Spotify (from APT if possible, otherwise Flatpak)
