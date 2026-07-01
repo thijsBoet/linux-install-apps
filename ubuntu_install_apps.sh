@@ -60,16 +60,20 @@ apt -y upgrade
 echo "=== Installing Required Dependencies ==="
 apt -y install wget curl gnupg ca-certificates flatpak \
     build-essential software-properties-common \
-    apt-transport-https
+    apt-transport-https python3-venv python3-pip
 
 # linux-headers can 404 on some kernel flavors (cloud/generic/HWE builds).
 # Kept separate so a missing package doesn't abort the whole install under set -e.
 apt -y install "linux-headers-$(uname -r)" || echo "Warning: linux-headers-$(uname -r) not available, skipping"
 
-# VLC lives in Ubuntu's 'universe' component. On minimal/server installs this
-# may not be enabled by default. We no longer fall back to Flatpak for VLC,
-# so make sure universe is on before we get there.
+# VLC and qBittorrent live in Ubuntu's 'universe' component. On minimal/server
+# installs this may not be enabled by default. We no longer fall back to
+# Flatpak for these, so make sure universe is on before we get there.
 add-apt-repository -y universe || true
+apt update
+
+# Steam lives in Ubuntu's 'multiverse' component (proprietary software).
+add-apt-repository -y multiverse || true
 apt update
 
 # Install GNOME tools only if GNOME is available
@@ -77,11 +81,10 @@ if dpkg -l | grep -q gnome-shell; then
     apt -y install gnome-shell-extension-prefs gnome-tweaks || true
 fi
 
-# Flathub is still needed for ZapZap, which has no official apt/deb package
-# (distributed only via Flatpak/Snap/AppImage). Every other app in this
-# script now installs via apt with no Flatpak fallback.
+# Flathub is needed for ZapZap and Heroic Games Launcher, which have no
+# official apt/deb package (distributed only via Flatpak/Snap/AppImage).
 if ! flatpak remote-list | grep -q flathub; then
-    echo "=== Adding Flathub repository (required for ZapZap only) ==="
+    echo "=== Adding Flathub repository (required for ZapZap and Heroic) ==="
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 fi
 
@@ -129,10 +132,37 @@ echo "=== Installing VLC ==="
 apt -y install vlc
 
 #############################################
+# qBittorrent (from APT)
+#############################################
+echo "=== Installing qBittorrent ==="
+apt -y install qbittorrent
+
+#############################################
+# Document Scanner - Simple Scan (from APT)
+#############################################
+echo "=== Installing Document Scanner (Simple Scan) ==="
+apt -y install simple-scan
+
+#############################################
+# Steam (from APT)
+#############################################
+echo "=== Installing Steam ==="
+# On Debian, Steam typically needs 'contrib' + 'non-free' enabled instead of
+# multiverse; if the install below fails, enable those manually and re-run.
+apt -y install steam-installer || apt -y install steam || \
+    echo "Warning: Steam package not found in configured repos, skipping"
+
+#############################################
 # ZapZap (Flatpak)
 #############################################
 echo "=== Installing ZapZap ==="
 flatpak install -y flathub com.rtosta.zapzap
+
+#############################################
+# Heroic Games Launcher (Flatpak)
+#############################################
+echo "=== Installing Heroic Games Launcher ==="
+flatpak install -y flathub com.heroicgameslauncher.hgl
 
 #############################################
 # Install System Tools (APT)
@@ -189,6 +219,50 @@ usermod -aG docker "$TARGET_USER"
 
 echo "Docker installed successfully. User $TARGET_USER added to docker group."
 echo "Note: User needs to log out and back in for docker group to take effect."
+
+#############################################
+# Ollama
+#############################################
+echo "=== Installing Ollama ==="
+if ! command -v ollama &> /dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh
+else
+    echo "Ollama already installed, skipping"
+fi
+
+#############################################
+# LM Studio (AppImage)
+#############################################
+echo "=== Installing LM Studio ==="
+LMSTUDIO_APPIMAGE="/opt/lmstudio/LM-Studio.AppImage"
+if [ ! -f "$LMSTUDIO_APPIMAGE" ]; then
+    mkdir -p /opt/lmstudio
+    # LM Studio ships only as an AppImage (no apt/flatpak package). This is
+    # LM Studio's official "latest stable" download link; if it 404s, grab
+    # the current URL from https://lmstudio.ai/download and update it here.
+    if wget -q -O "$LMSTUDIO_APPIMAGE" "https://releases.lmstudio.ai/linux/x64/latest/LM-Studio.AppImage"; then
+        chmod +x "$LMSTUDIO_APPIMAGE"
+        ln -sf "$LMSTUDIO_APPIMAGE" /usr/local/bin/lmstudio
+
+        # Create a desktop entry so it shows up in the app menu like a
+        # normal install (AppImages don't do this automatically).
+        cat > /usr/share/applications/lmstudio.desktop <<EOF
+[Desktop Entry]
+Name=LM Studio
+Comment=Run local LLMs
+Exec=$LMSTUDIO_APPIMAGE
+Icon=lmstudio
+Terminal=false
+Type=Application
+Categories=Development;Utility;
+EOF
+    else
+        echo "Warning: Could not download LM Studio AppImage, skipping. Check https://lmstudio.ai/download for the current URL."
+        rm -rf /opt/lmstudio
+    fi
+else
+    echo "LM Studio already installed, skipping"
+fi
 
 #############################################
 # VirtualBox (optional)
@@ -253,6 +327,71 @@ for RC in ".bashrc" ".zshrc" ".profile"; do
 done
 
 #############################################
+# Python (latest stable, via pyenv)
+#############################################
+echo "=== Installing latest stable Python for $TARGET_USER ==="
+# Build dependencies pyenv needs to compile Python from source
+apt -y install make build-essential libssl-dev zlib1g-dev libbz2-dev \
+    libreadline-dev libsqlite3-dev libncursesw5-dev xz-utils tk-dev \
+    libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+
+runuser -u "$TARGET_USER" -- bash -c '
+  set -e
+  export PYENV_ROOT="$HOME/.pyenv"
+  if [ ! -d "$PYENV_ROOT" ]; then
+    echo "Installing pyenv..."
+    curl -fsSL https://pyenv.run | bash
+  else
+    echo "pyenv already present at $PYENV_ROOT"
+  fi
+
+  export PATH="$PYENV_ROOT/bin:$PATH"
+  eval "$(pyenv init -)"
+
+  LATEST_STABLE="$(pyenv install --list | grep -E "^[[:space:]]*3\.[0-9]+\.[0-9]+$" | tail -1 | tr -d "[:space:]")"
+  echo "Latest stable Python is $LATEST_STABLE"
+  pyenv install -s "$LATEST_STABLE"
+  pyenv global "$LATEST_STABLE"
+
+  python --version
+'
+
+# Wire pyenv into shell profiles, same idempotent pattern as NVM above
+PYENV_SNIPPET='export PYENV_ROOT="$HOME/.pyenv"
+[ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"'
+
+for RC in ".bashrc" ".zshrc" ".profile"; do
+  RC_PATH="$TARGET_HOME/$RC"
+  if [ -f "$RC_PATH" ]; then
+    if ! grep -q 'export PYENV_ROOT="$HOME/.pyenv"' "$RC_PATH"; then
+      echo "$PYENV_SNIPPET" >> "$RC_PATH"
+    fi
+  else
+    echo "$PYENV_SNIPPET" > "$RC_PATH"
+    chown "$TARGET_USER":"$TARGET_USER" "$RC_PATH"
+  fi
+done
+
+#############################################
+# vLLM (Python package, per-user venv)
+#############################################
+echo "=== Installing vLLM for $TARGET_USER ==="
+# vLLM is a Python inference server, not a system package, so it's installed
+# into its own venv (using the system python3) to avoid conflicting with
+# anything else. It generally requires an NVIDIA GPU + CUDA to serve models.
+runuser -u "$TARGET_USER" -- bash -c '
+  set -e
+  VENV_DIR="$HOME/.venvs/vllm"
+  if [ ! -d "$VENV_DIR" ]; then
+    python3 -m venv "$VENV_DIR"
+  fi
+  "$VENV_DIR/bin/pip" install --upgrade pip
+  "$VENV_DIR/bin/pip" install vllm
+  echo "vLLM installed in $VENV_DIR. Activate with: source ~/.venvs/vllm/bin/activate"
+' || echo "Warning: vLLM install failed (heavy dependencies, typically needs an NVIDIA GPU) - skipping"
+
+#############################################
 # Install global NPM packages (as TARGET_USER)
 #############################################
 echo "=== Installing global NPM packages (currently disabled) ==="
@@ -309,6 +448,11 @@ NEW_APPS=(
     "code.desktop"
     "vlc.desktop"
     "com.rtosta.zapzap.desktop"
+    "com.heroicgameslauncher.hgl.desktop"
+    "steam.desktop"
+    "org.qbittorrent.qBittorrent.desktop"
+    "simple-scan.desktop"
+    "lmstudio.desktop"
 )
 
 for APP in "${NEW_APPS[@]}"; do
@@ -366,10 +510,15 @@ echo "1. 🔄 RESTART your session (log out and log back in)"
 echo "   - Required for docker group membership to take effect"
 echo ""
 echo "2. 📱 Launch apps from Activities or run:"
-echo "   - Chrome:   google-chrome"
-echo "   - VS Code:  code"
-echo "   - VLC:      vlc"
-echo "   - ZapZap:   flatpak run com.rtosta.zapzap  (Flatpak-only app)"
+echo "   - Chrome:      google-chrome"
+echo "   - VS Code:     code"
+echo "   - VLC:         vlc"
+echo "   - qBittorrent: qbittorrent"
+echo "   - Scanner:     simple-scan"
+echo "   - Steam:       steam"
+echo "   - ZapZap:      flatpak run com.rtosta.zapzap"
+echo "   - Heroic:      flatpak run com.heroicgameslauncher.hgl"
+echo "   - LM Studio:   lmstudio"
 echo ""
 echo "3. 📌 To pin apps to your dock, run as $TARGET_USER:"
 if [ -f "$TARGET_HOME/pin-apps-helper.sh" ]; then
@@ -379,7 +528,16 @@ echo ""
 echo "4. 💻 For NVM/Node.js in new terminals:"
 echo "   source ~/.bashrc"
 echo ""
-echo "5. 🐳 Test Docker (after relogging):"
+echo "5. 🐍 For pyenv/Python in new terminals:"
+echo "   source ~/.bashrc"
+echo "   python --version"
+echo ""
+echo "6. 🤖 Local AI tools:"
+echo "   - Ollama:  ollama run <model>   (runs as a background service)"
+echo "   - vLLM:    source ~/.venvs/vllm/bin/activate  (then: vllm serve <model>)"
+echo "   - LM Studio: launch from app menu or run 'lmstudio'"
+echo ""
+echo "7. 🐳 Test Docker (after relogging):"
 echo "   docker run hello-world"
 echo "   docker compose version"
 echo ""
