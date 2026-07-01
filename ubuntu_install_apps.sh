@@ -1,14 +1,16 @@
 #!/bin/bash
 set -euo pipefail
-# This script must be run from a NATIVE terminal (not Flatpak terminal)
-# If you get "no new privileges" error, you're in a Flatpak/container terminal
+# This script must be run from a NATIVE terminal (not Flatpak/sandboxed terminal)
+# If you get "no new privileges" or permission errors, you're in a Flatpak/container terminal
 
 echo "=== Ubuntu/Debian App Installation Script ==="
 echo ""
 
-# Check if we're in a container/flatpak (which causes the sudo issue)
-if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q flatpak /proc/1/cgroup 2>/dev/null; then
-    echo "ERROR: This script is running inside a container or Flatpak!"
+# Check if we're in a container/flatpak (which causes the sudo/keyring issues)
+# Note: checking FLATPAK_ID / .flatpak-info catches sandboxed *terminals*
+# (e.g. GNOME Console via Flatpak), which /proc/1/cgroup alone can miss.
+if [ -n "${FLATPAK_ID:-}" ] || [ -f /.flatpak-info ] || [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+    echo "ERROR: This script is running inside a sandboxed/Flatpak terminal or container!"
     echo "Please run this script from your native system terminal:"
     echo "  1. Exit this terminal"
     echo "  2. Press Ctrl+Alt+T or open 'Terminal' from applications"
@@ -17,7 +19,7 @@ if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q flatpak /proc/1/cg
 fi
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]; then 
+if [ "$EUID" -ne 0 ]; then
     echo "This script needs root privileges."
     echo "Please run: sudo bash $0"
     exit 1
@@ -45,8 +47,12 @@ apt -y upgrade
 
 echo "=== Installing Required Dependencies ==="
 apt -y install wget curl gnupg ca-certificates flatpak \
-    build-essential linux-headers-$(uname -r) software-properties-common \
+    build-essential software-properties-common \
     apt-transport-https
+
+# linux-headers can 404 on some kernel flavors (cloud/generic/HWE builds).
+# Kept separate so a missing package doesn't abort the whole install under set -e.
+apt -y install "linux-headers-$(uname -r)" || echo "Warning: linux-headers-$(uname -r) not available, skipping"
 
 # Install GNOME tools only if GNOME is available
 if dpkg -l | grep -q gnome-shell; then
@@ -60,15 +66,18 @@ if ! flatpak remote-list | grep -q flathub; then
 fi
 
 #############################################
-# Brave Browser (from APT if possible, otherwise Flatpak)
+# Google Chrome (from APT if possible, otherwise Flatpak)
 #############################################
 echo "=== Installing Google Chrome (Stable) ==="
 
 # Check if Google Chrome repo is already configured
 if [ ! -f /etc/apt/sources.list.d/google-chrome.list ]; then
     # Download and install Google's signing key
+    # --batch --yes prevents gpg from prompting to overwrite an existing
+    # keyring file, which fails non-interactively and kills the script
+    # under set -e (this was the source of most "strange errors").
     wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/google-chrome.gpg
 
     # Add the Google Chrome repository
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
@@ -86,7 +95,8 @@ apt install -y google-chrome-stable
 #############################################
 echo "=== Installing Spotify ==="
 if [ ! -f /etc/apt/sources.list.d/spotify.list ]; then
-    curl -sS https://download.spotify.com/debian/pubkey_C85668DF69375001.gpg | gpg --dearmor -o /usr/share/keyrings/spotify-keyring.gpg
+    curl -sS https://download.spotify.com/debian/pubkey_C85668DF69375001.gpg \
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/spotify-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/spotify-keyring.gpg] http://repository.spotify.com stable non-free" > /etc/apt/sources.list.d/spotify.list
     apt update
 fi
@@ -100,7 +110,8 @@ apt -y install spotify-client || {
 #############################################
 echo "=== Installing VS Code ==="
 if [ ! -f /etc/apt/sources.list.d/vscode.list ]; then
-    wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-keyring.gpg
+    wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-keyring.gpg
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-keyring.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
     apt update
 fi
@@ -144,23 +155,30 @@ apt remove -y docker \
     containerd \
     runc || true
 
-# Install Docker repository
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
+# Guarded the same way as Chrome/Spotify/VS Code above: only (re)create the
+# keyring and repo file if the repo isn't already configured. Previously this
+# ran unconditionally on every invocation and gpg would refuse to overwrite
+# the existing keyring file, aborting the script under set -e.
+if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
 
-# Detect Ubuntu/Debian and set appropriate repository
-if [ -f /etc/debian_version ]; then
-    if [ -f /etc/lsb-release ]; then
-        # Ubuntu
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-    else
-        # Debian
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+    # Detect Ubuntu/Debian and set appropriate repository
+    if [ -f /etc/debian_version ]; then
+        if [ -f /etc/lsb-release ]; then
+            # Ubuntu
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+        else
+            # Debian
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+        fi
     fi
+
+    apt update
 fi
 
-apt update
 apt -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # Start and enable Docker
@@ -177,7 +195,7 @@ echo "Note: User needs to log out and back in for docker group to take effect."
 # VirtualBox (optional)
 #############################################
 # echo "=== Installing VirtualBox ==="
-# wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc | gpg --dearmor -o /usr/share/keyrings/oracle-virtualbox-2016.gpg
+# wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/oracle-virtualbox-2016.gpg
 # echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(lsb_release -cs) contrib" > /etc/apt/sources.list.d/virtualbox.list
 # apt update
 # apt -y install virtualbox-7.0
@@ -195,22 +213,22 @@ runuser -u "$TARGET_USER" -- bash -c '
   else
     echo "NVM already present at $NVM_DIR"
   fi
-  
+
   # Ensure nvm is available in this non-login shell
   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-  
+
   echo "Installing Node.js Latest LTS..."
   nvm install --lts
-  
+
   echo "Installing Node.js Latest Current..."
   nvm install node
-  
+
   echo "Setting default Node.js to LTS..."
   nvm alias default lts/*
-  
+
   echo "Enabling Corepack (Yarn/PNPM shims)..."
   corepack enable || true
-  
+
   echo "Node versions installed:"
   nvm ls
   node -v
@@ -238,51 +256,54 @@ done
 #############################################
 # Install global NPM packages (as TARGET_USER)
 #############################################
-echo "=== Installing global NPM packages ==="
-runuser -u "$TARGET_USER" -- bash -c '
-  set -e
-  export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-  
-  npm install -g \
-    axios \
-    react \
-    lodash \
-    chalk \
-    async \
-    colors \
-    eslint \
-    dotenv \
-    socket.io \
-    react-redux \
-    path \
-    mongodb \
-    bootstrap \
-    less \
-    sass-loader \
-    postcss \
-    jsonwebtoken \
-    cors \
-    react-router \
-    browserify \
-    prettier \
-    nodemailer \
-    nodemon \
-    sqlite3
-'
+echo "=== Installing global NPM packages (currently disabled) ==="
+# runuser -u "$TARGET_USER" -- bash -c '
+#   set -e
+#   export NVM_DIR="$HOME/.nvm"
+#   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+#
+#   npm install -g \
+#     axios \
+#     react \
+#     lodash \
+#     chalk \
+#     async \
+#     colors \
+#     eslint \
+#     dotenv \
+#     socket.io \
+#     react-redux \
+#     path \
+#     mongodb \
+#     bootstrap \
+#     less \
+#     sass-loader \
+#     postcss \
+#     jsonwebtoken \
+#     cors \
+#     react-router \
+#     browserify \
+#     prettier \
+#     nodemailer \
+#     nodemon \
+#     sqlite3
+# '
 
 #############################################
 # Pin Apps to Dock (GNOME only)
 #############################################
 if command -v gnome-shell &> /dev/null; then
     echo "=== Creating dock pinning helper ==="
-    
+
     # Create a helper script for the user to run
     HELPER_SCRIPT="$TARGET_HOME/pin-apps-helper.sh"
     cat > "$HELPER_SCRIPT" <<'EOFHELPER'
 #!/bin/bash
 CURRENT_FAVORITES=$(gsettings get org.gnome.shell favorite-apps 2>/dev/null || echo "[]")
-FAVORITES=$(echo "$CURRENT_FAVORITES" | sed "s/^\['//;s/'\]$//;s/', '/ /g")
+
+# Read existing favorites into an array, preserving entries as whole items
+# (quoting avoids breaking on any .desktop name containing a space).
+mapfile -t FAVORITES_ARR < <(echo "$CURRENT_FAVORITES" | sed "s/^\[//;s/\]$//" | tr ',' '\n' | sed "s/^ *'//;s/' *$//")
 
 NEW_APPS=(
     "google-chrome.desktop"
@@ -293,13 +314,26 @@ NEW_APPS=(
 )
 
 for APP in "${NEW_APPS[@]}"; do
-    if [[ ! " $FAVORITES " =~ " $APP " ]]; then
-        FAVORITES="$FAVORITES $APP"
+    FOUND=0
+    for EXISTING in "${FAVORITES_ARR[@]}"; do
+        if [ "$EXISTING" = "$APP" ]; then
+            FOUND=1
+            break
+        fi
+    done
+    if [ "$FOUND" -eq 0 ]; then
+        FAVORITES_ARR+=("$APP")
     fi
 done
 
-UPDATED_FAVORITES=$(printf "'%s', " $FAVORITES)
-UPDATED_FAVORITES="[${UPDATED_FAVORITES%, }]"
+UPDATED_FAVORITES="["
+for i in "${!FAVORITES_ARR[@]}"; do
+    UPDATED_FAVORITES+="'${FAVORITES_ARR[$i]}'"
+    if [ "$i" -lt $((${#FAVORITES_ARR[@]} - 1)) ]; then
+        UPDATED_FAVORITES+=", "
+    fi
+done
+UPDATED_FAVORITES+="]"
 
 gsettings set org.gnome.shell favorite-apps "$UPDATED_FAVORITES" 2>/dev/null && \
     echo "Apps pinned successfully!" || \
@@ -309,7 +343,7 @@ rm -f "$0"
 EOFHELPER
     chown "$TARGET_USER":"$TARGET_USER" "$HELPER_SCRIPT"
     chmod +x "$HELPER_SCRIPT"
-    
+
     echo "Created helper script at $HELPER_SCRIPT"
 else
     echo "=== GNOME Shell not detected, skipping dock pinning ==="
