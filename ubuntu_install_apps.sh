@@ -41,6 +41,18 @@ echo "Target user: $TARGET_USER ($TARGET_HOME)"
 echo "Target UID/GID: $TARGET_UID/$TARGET_GID"
 echo ""
 
+echo "=== Cleaning up leftovers from prior script versions ==="
+# Earlier versions of this script added a Spotify apt repo. Spotify has since
+# rotated their signing key, and Spotify support has been removed from this
+# script entirely. If that repo file is still present from a previous run,
+# every apt update on this machine will keep failing with NO_PUBKEY errors
+# even though this script no longer references Spotify anywhere. Clean it up.
+if [ -f /etc/apt/sources.list.d/spotify.list ]; then
+    echo "Removing leftover Spotify apt repo (no longer used by this script)..."
+    rm -f /etc/apt/sources.list.d/spotify.list
+    rm -f /usr/share/keyrings/spotify-keyring.gpg
+fi
+
 echo "=== Updating Ubuntu/Debian ==="
 apt update
 apt -y upgrade
@@ -54,14 +66,22 @@ apt -y install wget curl gnupg ca-certificates flatpak \
 # Kept separate so a missing package doesn't abort the whole install under set -e.
 apt -y install "linux-headers-$(uname -r)" || echo "Warning: linux-headers-$(uname -r) not available, skipping"
 
+# VLC lives in Ubuntu's 'universe' component. On minimal/server installs this
+# may not be enabled by default. We no longer fall back to Flatpak for VLC,
+# so make sure universe is on before we get there.
+add-apt-repository -y universe || true
+apt update
+
 # Install GNOME tools only if GNOME is available
 if dpkg -l | grep -q gnome-shell; then
     apt -y install gnome-shell-extension-prefs gnome-tweaks || true
 fi
 
-# Ensure Flathub is enabled for Flatpak
+# Flathub is still needed for ZapZap, which has no official apt/deb package
+# (distributed only via Flatpak/Snap/AppImage). Every other app in this
+# script now installs via apt with no Flatpak fallback.
 if ! flatpak remote-list | grep -q flathub; then
-    echo "=== Adding Flathub repository ==="
+    echo "=== Adding Flathub repository (required for ZapZap only) ==="
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 fi
 
@@ -91,21 +111,6 @@ fi
 apt install -y google-chrome-stable
 
 #############################################
-# Spotify (from APT if possible, otherwise Flatpak)
-#############################################
-echo "=== Installing Spotify ==="
-if [ ! -f /etc/apt/sources.list.d/spotify.list ]; then
-    curl -sS https://download.spotify.com/debian/pubkey_C85668DF69375001.gpg \
-        | gpg --batch --yes --dearmor -o /usr/share/keyrings/spotify-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/spotify-keyring.gpg] http://repository.spotify.com stable non-free" > /etc/apt/sources.list.d/spotify.list
-    apt update
-fi
-apt -y install spotify-client || {
-    echo "APT install failed, falling back to Flatpak..."
-    flatpak install -y flathub com.spotify.Client
-}
-
-#############################################
 # Visual Studio Code (from APT)
 #############################################
 echo "=== Installing VS Code ==="
@@ -115,19 +120,13 @@ if [ ! -f /etc/apt/sources.list.d/vscode.list ]; then
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-keyring.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
     apt update
 fi
-apt -y install code || {
-    echo "APT install failed, falling back to Flatpak..."
-    flatpak install -y flathub com.visualstudio.code
-}
+apt -y install code
 
 #############################################
 # VLC (from APT)
 #############################################
 echo "=== Installing VLC ==="
-apt -y install vlc || {
-    echo "APT install failed, falling back to Flatpak..."
-    flatpak install -y flathub org.videolan.VLC
-}
+apt -y install vlc
 
 #############################################
 # ZapZap (Flatpak)
@@ -155,7 +154,7 @@ apt remove -y docker \
     containerd \
     runc || true
 
-# Guarded the same way as Chrome/Spotify/VS Code above: only (re)create the
+# Guarded the same way as Chrome/VS Code above: only (re)create the
 # keyring and repo file if the repo isn't already configured. Previously this
 # ran unconditionally on every invocation and gpg would refuse to overwrite
 # the existing keyring file, aborting the script under set -e.
@@ -307,7 +306,6 @@ mapfile -t FAVORITES_ARR < <(echo "$CURRENT_FAVORITES" | sed "s/^\[//;s/\]$//" |
 
 NEW_APPS=(
     "google-chrome.desktop"
-    "spotify.desktop"
     "code.desktop"
     "vlc.desktop"
     "com.rtosta.zapzap.desktop"
@@ -368,11 +366,10 @@ echo "1. 🔄 RESTART your session (log out and log back in)"
 echo "   - Required for docker group membership to take effect"
 echo ""
 echo "2. 📱 Launch apps from Activities or run:"
-echo "   - Chrome:   google-chrome (or flatpak run com.google.Chrome)"
-echo "   - Spotify:  spotify (or flatpak run com.spotify.Client)"
-echo "   - VS Code:  code (or flatpak run com.visualstudio.code)"
-echo "   - VLC:      vlc (or flatpak run org.videolan.VLC)"
-echo "   - ZapZap:   flatpak run com.rtosta.zapzap"
+echo "   - Chrome:   google-chrome"
+echo "   - VS Code:  code"
+echo "   - VLC:      vlc"
+echo "   - ZapZap:   flatpak run com.rtosta.zapzap  (Flatpak-only app)"
 echo ""
 echo "3. 📌 To pin apps to your dock, run as $TARGET_USER:"
 if [ -f "$TARGET_HOME/pin-apps-helper.sh" ]; then
